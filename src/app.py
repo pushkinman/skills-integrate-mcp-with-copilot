@@ -5,6 +5,7 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -19,8 +20,11 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
-activities = {
+# Path to the persistent activities data file
+DATA_FILE = Path(__file__).parent / "data" / "activities.json"
+
+# Default activity data used when no saved data exists
+DEFAULT_ACTIVITIES = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
@@ -78,6 +82,38 @@ activities = {
 }
 
 
+def load_activities() -> dict:
+    """Load activities from the JSON data file, falling back to defaults if needed."""
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # File is corrupt or unreadable — fall through to defaults
+            pass
+    # First run or corrupt file: seed with defaults and persist them
+    _write_activities(DEFAULT_ACTIVITIES)
+    return dict(DEFAULT_ACTIVITIES)
+
+
+def _write_activities(data: dict) -> None:
+    """Atomically write activities data to disk via a temp-file rename."""
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DATA_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp.replace(DATA_FILE)
+
+
+def save_activities() -> None:
+    """Persist the current in-memory activities dict to the data file."""
+    _write_activities(activities)
+
+
+# Load persisted activities on startup
+activities = load_activities()
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
@@ -105,8 +141,9 @@ def signup_for_activity(activity_name: str, email: str):
             detail="Student is already signed up"
         )
 
-    # Add student
+    # Add student and persist
     activity["participants"].append(email)
+    save_activities()
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
@@ -127,6 +164,7 @@ def unregister_from_activity(activity_name: str, email: str):
             detail="Student is not signed up for this activity"
         )
 
-    # Remove student
+    # Remove student and persist
     activity["participants"].remove(email)
+    save_activities()
     return {"message": f"Unregistered {email} from {activity_name}"}
